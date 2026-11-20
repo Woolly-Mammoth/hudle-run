@@ -9,7 +9,7 @@
 // HUDLE_CLI=<path to bin/hudle.mjs> uses a local copy instead.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { constants, homedir } from "node:os";
 import { join } from "node:path";
 
 const REPO = "Woolly-Mammoth/hudle-cli";
@@ -59,14 +59,30 @@ function fetchCli() {
   return null;
 }
 
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+
 function start(command, commandArgs, env = process.env) {
   const child = spawn(command, commandArgs, { stdio: "inherit", env });
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
-  child.on("exit", (code, signal) => (signal ? process.kill(process.pid, signal) : process.exit(code ?? 0)));
+  for (const signal of SIGNALS) process.on(signal, () => child.kill(signal));
+  child.on("exit", (code, signal) => {
+    if (!signal) return process.exit(code ?? 0);
+    exitBySignal(signal);
+  });
   child.on("error", (err) => {
     say(`couldn't start ${command}: ${err.message}`);
     process.exit(1);
   });
+}
+
+// A child killed by a signal ends this process the same way, so a shell or CI sees the kill
+// (`$?` 130 for Ctrl-C, 143 for SIGTERM) and `a && b` stops. Our own forwarding listeners have
+// to go first: while a listener is installed, Node no longer terminates on that signal, and
+// re-raising it would only run the listener and then exit 0. The exit code is a fallback for a
+// signal that is ignored here.
+function exitBySignal(signal) {
+  for (const s of SIGNALS) process.removeAllListeners(s);
+  process.exitCode = 128 + (constants.signals[signal] ?? 0);
+  process.kill(process.pid, signal);
 }
 
 /** The command in `hudle run [--env <name>] [--] <command...>`, read the way the hudle command reads it. */
